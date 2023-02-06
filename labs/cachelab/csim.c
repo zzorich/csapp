@@ -192,6 +192,8 @@ int main (int argc, char *argv[])
         }
     }
 
+    fclose(trace);
+
     printSummary(num_hit, num_miss, num_eviction);
     return 0;
 }
