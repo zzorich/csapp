@@ -17,6 +17,8 @@ void trans_std(int M, int N, int A[N][M], int B[M][N]);
 void trans64(int M, int N, int A[N][M], int B[M][N]);
 static void print_matrix(int M, int N, int C[M][N]);
 void imporved_trans_64(int M, int N, int A[N][M], int B[M][N]);
+void trans_n_blocking(int M, int N, int A[N][M], int B[M][N], int n);
+
 
 /* 
  * transpose_submit - This is the solution transpose function that you
@@ -33,7 +35,8 @@ void transpose_submit(int M, int N, int A[N][M], int B[M][N])
     } else if (M == 64){
         imporved_trans_64(M, N, A, B);
     } else {
-        trans_std(M, N, A, B);
+        // trans_std(M, N, A, B);
+        trans_n_blocking(M, N, A, B, 17);
     }
 }
 
@@ -238,6 +241,17 @@ void imporved_trans_64(int M, int N, int A[N][M], int B[M][N]) {
                 B[jn + 5][in + row_index] = tmp1;
                 B[jn + 6][in + row_index] = tmp2;
                 B[jn + 7][in + row_index] = tmp3;
+            }
+        }
+    }
+}
+void trans_n_blocking(int M, int N, int A[N][M], int B[M][N], int n) {
+    for (int in = 0; in < N; in += n) {
+        for (int jn = 0; jn < M; jn += n) {
+            for (int row_index = 0; row_index < min(N - in, n); row_index++) {
+                for (int col_index = 0; col_index < min(M - jn, n); col_index++) {
+                    B[jn + col_index][in + row_index] = A[in + row_index][jn + col_index];
+                }
             }
         }
     }
