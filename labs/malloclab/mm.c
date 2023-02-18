@@ -48,11 +48,11 @@ team_t team = {
 #define DSIZE 8 // The size of double word
 #define CHUNKSIZE (1 << 12) // The minimal size needed for heap extension
 #define MINBSIZE (4 * WSIZE) // The minimal block size for allocated or free block, which is two word for header and footer and other two for next fptr and previous fptr
-#define MAX_LIST_SIZE 8 // the maximal list size
+#define MAX_LIST_SIZE 20 // the maximal list size
 
 #define MIN(x, y) ((x) < (y)? (x):(y))
 #define MAX(x, y) ((x) > (y)? (x):(y))
-#define PACK(size, alloc, prev_alloc) (size) | (alloc) | ((prev_alloc) << 1)// pack the size and alloc into a int
+#define PACK(size, alloc, prev_alloc) ((size) | (alloc) | ((prev_alloc) << 1))// pack the size and alloc into a int
 
 /* Read or write a word at address p */
 #define GET(p) (*(uint32_t *)(p))
@@ -79,7 +79,7 @@ team_t team = {
 
 
 /* Given a block ptr bp, compute address of next and previous blocks */
-#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(HDRP((bp))))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) // this is only vaild if previous block is sure to be a free block
 
 /* Given a mallocated block, alter its header to change the status of whether previous block is allocated */
@@ -122,7 +122,7 @@ static void check_no_unattached_free_block(void) {
                 fbp = NEXT_FREEP(fbp);
             }
             if (!flag) {
-                printf("Error: unattached free block detected!");
+                printf("Error: unattached free block detected! The address is %p, and the prologue is at %p\n", bp, prologue);
                 return;
             }
         }
@@ -142,7 +142,17 @@ static void check_no_adjacent_free_block(void) {
             p_alloc = GET_ALLOC(HDRP(pbp));
             n_alloc = GET_ALLOC(HDRP(nbp));
             if (!p_alloc || !n_alloc || !GET_PALLOC(HDRP(bp))) {
-                printf("Error: adjacent free block is detected!");
+                printf("Error: adjacent free block is detected! The address is %p, and has size %d.\n", bp, GET_SIZE(HDRP(bp)));
+                if (!p_alloc) {
+                    printf("Previous block is free, with address %p and size %d\n", pbp, GET_SIZE(HDRP(pbp)));
+                }
+                if (!n_alloc) {
+                    printf("Next block is free, with address %p and size %d\n", nbp, GET_SIZE(HDRP(nbp)));
+                }
+                if (!GET_PALLOC(HDRP(bp))) {
+                    printf("Incorrect status field flag.\n");
+                }
+                printf("The prologue is at %p and the endlogue is at %p\n", prologue, endlogue);
                 return;
             }
         }
@@ -154,23 +164,26 @@ static void check_no_adjacent_free_block(void) {
 static void check_correct_prev_alloc_flag() {
     void *pbp = prologue;
     void *bp = NEXT_BLKP(pbp);
+
     uint32_t size;
-    while ((size = GET_SIZE(HDRP(bp))) > 0) {
+    while ((size = GET_SIZE(HDRP(pbp))) > 0) {
         if (GET_PALLOC(HDRP(bp)) != GET_ALLOC(HDRP(pbp))) {
-            printf("A block with inconsitent prev_alloc flag is detected!");
+            printf("A block with inconsitent prev_alloc flag is detected! The address is %p, and the prologue is at %p\n", bp, prologue);
+            printf("The previous block is at %p, with current block has prev_alloc being %d.\n", pbp, GET_PALLOC(HDRP(bp)));
+            printf("The previous block flag is %d\n", GET_ALLOC(HDRP(pbp)));
             return;
         }
-        pbp = bp;
-        bp = NEXT_BLKP(pbp);
+        pbp = NEXT_BLKP(pbp);
+        bp = NEXT_BLKP(bp);
     }
 }
 
 static void check_minimal_block_size() {
-    void *bp = prologue;
+    void *bp = NEXT_BLKP(prologue);
     uint32_t size;
     while ((size = GET_SIZE(HDRP(bp))) > 0) {
-        if (size < MINBSIZE || (bp && 0x7) != 0) {
-            printf("Detected a block with size less then minimal block size");
+        if (size < MINBSIZE || ((uint32_t) bp & 0x7) != 0) {
+            printf("Detected a block with size less then minimal block size or miss aligned! The address is %p, which has size: %d, and the prologue is at %p\n", bp, size, prologue);
             return;
         }
         bp = NEXT_BLKP(bp);
@@ -196,7 +209,7 @@ static void place(void *fbp, uint32_t asize) {
         PUT_N_FREEA(n_bp, NULL);
         PUT_P_FREEA(n_bp, NULL);
         place_free(n_bp);
-        PUT_P_ALLOC(NEXT_BLKP(n_bp));
+        PUT_P_FREE(NEXT_BLKP(n_bp));
     }
 }
 
@@ -220,6 +233,7 @@ static void *coalesce(void *fbp) {
     uint32_t prev_alloc = GET_PALLOC(HDRP(fbp));
     uint32_t next_alloc = GET_ALLOC(HDRP(n_bp));
     uint32_t size = GET_SIZE(HDRP(fbp));
+
     void *p_fbp; // will be assigned to the block ptr of previous block if the previous block is free
     if (!prev_alloc && !next_alloc) {
         p_fbp = PREV_BLKP(fbp);
@@ -262,6 +276,8 @@ static void *coalesce(void *fbp) {
 
     /* update the new next block status field, which is assumed to be mallocated */
     n_bp = NEXT_BLKP(fbp);
+
+
     PUT_P_FREE(n_bp);
 
     return fbp;
@@ -271,7 +287,7 @@ static void *coalesce(void *fbp) {
 static void place_free(void *fbp) {
     uint32_t index = compute_index(GET_SIZE(HDRP(fbp)));
     void *n_fbp = free_lists_p[index];
-    free_lists_p[0] = fbp;
+    free_lists_p[index] = fbp;
     if (n_fbp != NULL) {
         PUT_N_FREEA(fbp, n_fbp);
         PUT_P_FREEA(n_fbp, fbp);
@@ -282,8 +298,8 @@ static void place_free(void *fbp) {
 static uint32_t compute_index(uint32_t size) {
 
     for (int i = 0; i < MAX_LIST_SIZE - 1; i++) {
-        uint32_t upper = 1 << (i + 4);
-        uint32_t lower = 1 << (i + 6);
+        uint32_t upper = (i + 1) * (1 << 8);
+        uint32_t lower = (i) * (1 << 8);
         if (size >= lower && size < upper) {
             return i;
         }
@@ -322,7 +338,8 @@ static void *remove_free(void *fbp) {
  */
 static void *extend_heap(uint32_t size) {
     void *bp;
-    uint32_t prev_alloc = GET_PALLOC(endlogue); // the flag whether the block before endlogue is allocated
+    uint32_t prev_alloc = GET_PALLOC(HDRP(endlogue)); // the flag whether the block before endlogue is allocated
+    
 
     if ((long)(bp = mem_sbrk(size)) == -1) return NULL;
 
@@ -333,7 +350,11 @@ static void *extend_heap(uint32_t size) {
     PUT_P_FREEA(bp, NULL);
     endlogue = NEXT_BLKP(bp);
     PUT(HDRP(endlogue), PACK(0, 1, 0)); /* New epilogue header */
+
     bp = coalesce(bp);
+
+
+
     return bp;
 }
 /* 
@@ -348,26 +369,33 @@ int mm_init(void) {
     }
 
     /* Create the intial empty heap */
-    if ((prologue = mem_sbrk(4 * WSIZE)) == (void *)-1) 
+    char *start_heap;
+    if ((start_heap = mem_sbrk(4 * WSIZE)) == (void *)-1) 
         return -1;
     
-    PUT(prologue, 0);
-    prologue += 2 * WSIZE;
+    PUT(start_heap, 0);
+    prologue = (start_heap + 2 * WSIZE);
     PUT(HDRP(prologue), PACK(DSIZE, 1, 0)); // prologue
     endlogue = NEXT_BLKP(prologue);
+
+
+    
     PUT(HDRP(endlogue), PACK(0, 1, 1)); // endlogue header
+    
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     void *fbp;
     if ((fbp = extend_heap(CHUNKSIZE)) == NULL)
         return -1;
+
     place_free(fbp);
 
     /* test before return */
-    check_correct_prev_alloc_flag();
-    check_minimal_block_size();
-    check_no_adjacent_free_block();
-    check_no_unattached_free_block();
+    // printf("test in init:\n");
+    // check_correct_prev_alloc_flag();
+    // check_minimal_block_size();
+    // check_no_adjacent_free_block();
+    // check_no_unattached_free_block();
 
     return 0;
 }
@@ -386,17 +414,18 @@ void *mm_malloc(size_t size) {
         remove_free(fbp);
         place(fbp, newsize);
     } else {
-        if ((fbp = extend_heap(MAX(CHUNKSIZE, newsize)))== NULL) {
+        if ((fbp = extend_heap(MAX(CHUNKSIZE, newsize))) == NULL) {
             return NULL;
         }
         place(fbp, newsize);
     }
 
     /* test before return */
-    check_correct_prev_alloc_flag();
-    check_minimal_block_size();
-    check_no_adjacent_free_block();
-    check_no_unattached_free_block();
+    // printf("test in malloc with size: %d and block size: %d\n", size, newsize);
+    // check_correct_prev_alloc_flag();
+    // check_minimal_block_size();
+    // check_no_adjacent_free_block();
+    // check_no_unattached_free_block();
 
     return fbp;
 }
@@ -415,10 +444,11 @@ void mm_free(void *ptr) {
     place_free(ptr);
 
     /* test before return */
-    check_correct_prev_alloc_flag();
-    check_minimal_block_size();
-    check_no_adjacent_free_block();
-    check_no_unattached_free_block();
+    // printf("test in free:\n");
+    // check_correct_prev_alloc_flag();
+    // check_minimal_block_size();
+    // check_no_adjacent_free_block();
+    // check_no_unattached_free_block();
 
 }
 
@@ -433,7 +463,7 @@ void *mm_realloc(void *ptr, size_t size) {
         mm_free(ptr);
         return NULL;
     }
-    if (ptr == NULL || ALIGN(sizeof(uint32_t) + size) <= GET_SIZE(HDRP(ptr))) {
+    if (ALIGN(sizeof(uint32_t) + size) <= GET_SIZE(HDRP(ptr))) {
         return ptr;
     }
     void *oldptr = ptr;
@@ -448,10 +478,10 @@ void *mm_realloc(void *ptr, size_t size) {
     mm_free(oldptr);
 
     /* test before return */
-    check_correct_prev_alloc_flag();
-    check_minimal_block_size();
-    check_no_adjacent_free_block();
-    check_no_unattached_free_block();
+    // check_correct_prev_alloc_flag();
+    // check_minimal_block_size();
+    // check_no_adjacent_free_block();
+    // check_no_unattached_free_block();
 
     return newptr;
 }
